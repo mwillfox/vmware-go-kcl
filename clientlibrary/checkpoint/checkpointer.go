@@ -44,6 +44,9 @@ const (
 
 	// ErrLeaseNotAquired is returned when we failed to get a lock on the shard
 	ErrLeaseNotAquired = "Lease is already held by another node"
+
+	// ErrShardClaimed is returned when shard is claimed
+	ErrShardClaimed = "Shard is already claimed by another node"
 )
 
 // Checkpointer handles checkpointing when a record has been processed

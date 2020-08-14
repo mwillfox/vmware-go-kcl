@@ -58,6 +58,7 @@ type Worker struct {
 	kclConfig        *config.KinesisClientLibConfiguration
 	kc               kinesisiface.KinesisAPI
 	checkpointer     chk.Checkpointer
+	leasestealer     chk.Leasestealer
 	mService         metrics.MonitoringService
 
 	stop      *chan struct{}
@@ -66,7 +67,8 @@ type Worker struct {
 
 	rng *rand.Rand
 
-	shardStatus map[string]*par.ShardStatus
+	shardStatus          map[string]*par.ShardStatus
+	shardStealInProgress bool
 }
 
 // NewWorker constructs a Worker instance for processing Kinesis stream data.
@@ -102,6 +104,13 @@ func (w *Worker) WithKinesis(svc kinesisiface.KinesisAPI) *Worker {
 // or unit testing.
 func (w *Worker) WithCheckpointer(checker chk.Checkpointer) *Worker {
 	w.checkpointer = checker
+	return w
+}
+
+// WithLeasestealer is used to provide a custom leasestealer service for non-dynamodb implementation
+// or unit testing.
+func (w *Worker) WithLeasestealer(leasestealer chk.Leasestealer) *Worker {
+	w.leasestealer = leasestealer
 	return w
 }
 
@@ -194,6 +203,15 @@ func (w *Worker) initialize() error {
 		log.Infof("Use custom checkpointer implementation.")
 	}
 
+	if w.kclConfig.EnableLeaseStealing {
+		if w.leasestealer == nil {
+			log.Infof("Creating DynamoDB based leasestealer")
+			w.leasestealer = chk.NewDynamoLeasestealer(w.kclConfig, w.checkpointer)
+		} else {
+			log.Infof("Use custom leasestealer implementation.")
+		}
+	}
+
 	err := w.mService.Init(w.kclConfig.ApplicationName, w.streamName, w.workerID)
 	if err != nil {
 		log.Errorf("Failed to start monitoring service: %+v", err)
@@ -203,6 +221,14 @@ func (w *Worker) initialize() error {
 	if err := w.checkpointer.Init(); err != nil {
 		log.Errorf("Failed to start Checkpointer: %+v", err)
 		return err
+	}
+
+	if w.kclConfig.EnableLeaseStealing {
+		log.Infof("Initializing Leasestealer")
+		if err := w.leasestealer.Init(); err != nil {
+			log.Errorf("Failed to start Leasestealer: %+v", err)
+			return err
+		}
 	}
 
 	w.shardStatus = make(map[string]*par.ShardStatus)
@@ -260,7 +286,7 @@ func (w *Worker) eventLoop() {
 		// Count the number of leases hold by this worker excluding the processed shard
 		counter := 0
 		for _, shard := range w.shardStatus {
-			if shard.GetLeaseOwner() == w.workerID && shard.Checkpoint != chk.SHARD_END {
+			if shard.GetLeaseOwner() == w.workerID && shard.GetCheckpoint() != chk.SHARD_END {
 				counter++
 			}
 		}
@@ -284,8 +310,21 @@ func (w *Worker) eventLoop() {
 				}
 
 				// The shard is closed and we have processed all records
-				if shard.Checkpoint == chk.SHARD_END {
+				if shard.GetCheckpoint() == chk.SHARD_END {
 					continue
+				}
+
+				var stealShard bool
+				if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" {
+					if shard.GetLeaseTimeout().Before(time.Now().Add(time.Duration(w.kclConfig.LeaseStealingIntervalMillis) * time.Millisecond)) {
+						if shard.ClaimRequest != w.workerID {
+							log.Debugf("Shard being stolen: %s", shard.ID)
+							continue
+						} else {
+							stealShard = true
+							log.Debugf("Stealing shard: %s", shard.ID)
+						}
+					}
 				}
 
 				err = w.checkpointer.GetLease(shard, w.workerID)
@@ -295,6 +334,11 @@ func (w *Worker) eventLoop() {
 						log.Errorf("Cannot get lease: %+v", err)
 					}
 					continue
+				}
+
+				if stealShard {
+					log.Debugf("Successfully stole shard: %+v", shard.ID)
+					w.shardStealInProgress = false
 				}
 
 				// log metrics on got lease
@@ -314,6 +358,13 @@ func (w *Worker) eventLoop() {
 			}
 		}
 
+		if w.kclConfig.EnableLeaseStealing {
+			err = w.rebalance()
+			if err != nil {
+				log.Warnf("Error in rebalance: %+v", err)
+			}
+		}
+
 		select {
 		case <-*w.stop:
 			log.Infof("Shutting down...")
@@ -322,6 +373,90 @@ func (w *Worker) eventLoop() {
 			log.Debugf("Waited %d ms to sync shards...", shardSyncSleep)
 		}
 	}
+}
+
+func (w *Worker) rebalance() error {
+	log := w.kclConfig.Logger
+
+	workers, err := w.leasestealer.ListActiveWorkers(w.shardStatus)
+	if err != nil {
+		log.Debugf("Error listing workers. workerID: %s. Error: %+v ", w.workerID, err)
+		return err
+	}
+
+	// Only attempt to steal one shard at at time, to allow for linear convergence
+	if w.shardStealInProgress {
+		shardInfo := make(map[string]bool)
+		err := w.getShardIDs("", shardInfo)
+		if err != nil {
+			return err
+		}
+		for _, shard := range w.shardStatus {
+			if shard.ClaimRequest != "" && shard.ClaimRequest == w.workerID {
+				log.Debugf("Steal in progress. workerID: %s", w.workerID)
+				return nil
+			}
+			// Our shard steal was stomped on by a Checkpoint.
+			// We could deal with that, but instead just try again
+			w.shardStealInProgress = false
+		}
+	}
+
+	var numShards int
+	for _, shards := range workers {
+		numShards += len(shards)
+	}
+
+	numWorkers := len(workers)
+
+	// 1:1 shards to workers is optimal, so we cannot possibly rebalance
+	if numWorkers >= numShards {
+		log.Debugf("Optimal shard allocation, not stealing any shards. workerID: %s, %v > %v. ", w.workerID, numWorkers, numShards)
+		return nil
+	}
+
+	currentShards, ok := workers[w.workerID]
+	var numCurrentShards int
+	if !ok {
+		numCurrentShards = 0
+		numWorkers++
+	} else {
+		numCurrentShards = len(currentShards)
+	}
+
+	optimalShards := numShards / numWorkers
+
+	// We have more than or equal optimal shards, so no rebalancing can take place
+	if numCurrentShards >= optimalShards || numCurrentShards == w.kclConfig.MaxLeasesForWorker {
+		log.Debugf("We have enough shards, not attempting to steal any. workerID: %s", w.workerID)
+		return nil
+	}
+	maxShards := int(optimalShards)
+	var workerSteal string
+	for worker, shards := range workers {
+		if worker != w.workerID && len(shards) > maxShards {
+			workerSteal = worker
+			maxShards = len(shards)
+		}
+	}
+	// Not all shards are allocated so fallback to default shard allocation mechanisms
+	if workerSteal == "" {
+		log.Infof("Not all shards are allocated, not stealing any. workerID: %s", w.workerID)
+		return nil
+	}
+
+	// Steal a random shard from the worker with the most shards
+	w.shardStealInProgress = true
+	randIndex := rand.Intn(len(workers[workerSteal]))
+	shardToSteal := workers[workerSteal][randIndex]
+	log.Debugf("Stealing shard %s from %s", shardToSteal, workerSteal)
+
+	err = w.leasestealer.ClaimShard(w.shardStatus[shardToSteal.ID], w.workerID)
+	if err != nil {
+		w.shardStealInProgress = false
+		return err
+	}
+	return nil
 }
 
 // List all shards and store them into shardStatus table

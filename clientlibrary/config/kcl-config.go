@@ -94,7 +94,9 @@ func NewKinesisClientLibConfigWithCredentials(applicationName, streamName, regio
 		InitialLeaseTableReadCapacity:                    DEFAULT_INITIAL_LEASE_TABLE_READ_CAPACITY,
 		InitialLeaseTableWriteCapacity:                   DEFAULT_INITIAL_LEASE_TABLE_WRITE_CAPACITY,
 		SkipShardSyncAtWorkerInitializationIfLeasesExist: DEFAULT_SKIP_SHARD_SYNC_AT_STARTUP_IF_LEASES_EXIST,
-		Logger: logger.GetDefaultLogger(),
+		Logger:                      logger.GetDefaultLogger(),
+		EnableLeaseStealing:         DEFAULT_ENABLE_LEASE_STEALING,
+		LeaseStealingIntervalMillis: DEFAULT_LEASE_STEALING_INTERVAL_MILLIS,
 	}
 }
 
@@ -210,5 +212,15 @@ func (c *KinesisClientLibConfiguration) WithMonitoringService(mService metrics.M
 	// Nil case is handled downward (at worker creation) so no need to do it here.
 	// Plus the user might want to be explicit about passing a nil monitoring service here.
 	c.MonitoringService = mService
+	return c
+}
+
+func (c *KinesisClientLibConfiguration) WithLeaseStealing(enableLeaseStealing bool) *KinesisClientLibConfiguration {
+	c.EnableLeaseStealing = enableLeaseStealing
+	return c
+}
+
+func (c *KinesisClientLibConfiguration) WithLeaseStealingIntervalMillis(leaseStealingIntervalMillis int) *KinesisClientLibConfiguration {
+	c.LeaseStealingIntervalMillis = leaseStealingIntervalMillis
 	return c
 }

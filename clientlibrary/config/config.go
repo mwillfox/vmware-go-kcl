@@ -130,6 +130,12 @@ const (
 
 	// The number of times the Proxy will retry listShards call when throttled.
 	DEFAULT_MAX_LIST_SHARDS_RETRY_ATTEMPTS = 50
+
+	// Lease stealing defaults to false for backwards compatibility.
+	DEFAULT_ENABLE_LEASE_STEALING = false
+
+	// Interval between rebalance tasks defaults to 5 seconds.
+	DEFAULT_LEASE_STEALING_INTERVAL_MILLIS = 5000
 )
 
 type (
@@ -254,6 +260,12 @@ type (
 
 		// MonitoringService publishes per worker-scoped metrics.
 		MonitoringService metrics.MonitoringService
+
+		// EnableLeaseStealing turns on lease stealing
+		EnableLeaseStealing bool
+
+		// LeaseStealingIntervalMillis The number of milliseconds between rebalance tasks
+		LeaseStealingIntervalMillis int
 	}
 )
 

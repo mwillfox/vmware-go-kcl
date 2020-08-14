@@ -25,59 +25,29 @@
 // The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-package worker
+package checkpoint
 
 import (
-	"sync"
-	"time"
+	"errors"
+
+	par "github.com/vmware/vmware-go-kcl/clientlibrary/partition"
 )
 
-type ShardStatus struct {
-	ID            string
-	ParentShardId string
-	Checkpoint    string
-	AssignedTo    string
-	Mux           *sync.Mutex
-	LeaseTimeout  time.Time
-	// Shard Range
-	StartingSequenceNumber string
-	// child shard doesn't have end sequence number
-	EndingSequenceNumber string
-	ClaimRequest         string
+const (
+	CLAIM_REQUEST_KEY = "ClaimRequest"
+)
+
+// Leasestealer handles stealing a lease for load balancing
+type Leasestealer interface {
+	// Init initialises the Leasestealer
+	Init() error
+
+	// ListActiveWorkers returns active workers and their shards
+	ListActiveWorkers(map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error)
+
+	// ClaimShard claims a shard for stealing
+	ClaimShard(*par.ShardStatus, string) error
 }
 
-func (ss *ShardStatus) GetLeaseOwner() string {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	return ss.AssignedTo
-}
-
-func (ss *ShardStatus) SetLeaseOwner(owner string) {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	ss.AssignedTo = owner
-}
-
-func (ss *ShardStatus) GetLeaseTimeout() time.Time {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	return ss.LeaseTimeout
-}
-
-func (ss *ShardStatus) SetLeaseTimeout(timeout time.Time) {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	ss.LeaseTimeout = timeout
-}
-
-func (ss *ShardStatus) GetCheckpoint() string {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	return ss.Checkpoint
-}
-
-func (ss *ShardStatus) SetCheckpoint(checkpoint string) {
-	ss.Mux.Lock()
-	defer ss.Mux.Unlock()
-	ss.Checkpoint = checkpoint
-}
+// ErrShardNotAssigned is returned by ListActiveWorkers when no AssignedTo is found
+var ErrShardNotAssigned = errors.New("AssignedToNotFoundForShard")

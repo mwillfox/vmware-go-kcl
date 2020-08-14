@@ -93,7 +93,8 @@ func (sc *ShardConsumer) getShardIterator(shard *par.ShardStatus) (*string, erro
 	}
 
 	// If there isn't any checkpoint for the shard, use the configuration value.
-	if shard.Checkpoint == "" {
+	checkpoint := shard.GetCheckpoint()
+	if checkpoint == "" {
 		initPos := sc.kclConfig.InitialPositionInStream
 		shardIteratorType := config.InitalPositionInStreamToShardIteratorType(initPos)
 		log.Debugf("No checkpoint recorded for shard: %v, starting with: %v", shard.ID,
@@ -122,7 +123,7 @@ func (sc *ShardConsumer) getShardIterator(shard *par.ShardStatus) (*string, erro
 		return iterResp.ShardIterator, nil
 	}
 
-	log.Debugf("Start shard: %v at checkpoint: %v", shard.ID, shard.Checkpoint)
+	log.Debugf("Start shard: %v at checkpoint: %v", shard.ID, checkpoint)
 	shardIterArgs := &kinesis.GetShardIteratorInput{
 		ShardId:                &shard.ID,
 		ShardIteratorType:      aws.String("AFTER_SEQUENCE_NUMBER"),
@@ -161,7 +162,7 @@ func (sc *ShardConsumer) getRecords(shard *par.ShardStatus) error {
 	// Start processing events and notify record processor on shard and starting checkpoint
 	input := &kcl.InitializationInput{
 		ShardId:                shard.ID,
-		ExtendedSequenceNumber: &kcl.ExtendedSequenceNumber{SequenceNumber: aws.String(shard.Checkpoint)},
+		ExtendedSequenceNumber: &kcl.ExtendedSequenceNumber{SequenceNumber: aws.String(shard.GetCheckpoint())},
 	}
 	sc.recordProcessor.Initialize(input)
 
@@ -169,7 +170,7 @@ func (sc *ShardConsumer) getRecords(shard *par.ShardStatus) error {
 	retriedErrors := 0
 
 	for {
-		if time.Now().UTC().After(shard.LeaseTimeout.Add(-time.Duration(sc.kclConfig.LeaseRefreshPeriodMillis) * time.Millisecond)) {
+		if time.Now().UTC().After(shard.GetLeaseTimeout().Add(-time.Duration(sc.kclConfig.LeaseRefreshPeriodMillis) * time.Millisecond)) {
 			log.Debugf("Refreshing lease on shard: %s for worker: %s", shard.ID, sc.consumerID)
 			err = sc.checkpointer.GetLease(shard, sc.consumerID)
 			if err != nil {
@@ -288,7 +289,7 @@ func (sc *ShardConsumer) waitOnParentShard(shard *par.ShardStatus) error {
 		}
 
 		// Parent shard is finished.
-		if pshard.Checkpoint == chk.SHARD_END {
+		if pshard.GetCheckpoint() == chk.SHARD_END {
 			return nil
 		}
 
