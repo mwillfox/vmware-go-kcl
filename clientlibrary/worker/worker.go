@@ -315,12 +315,14 @@ func (w *Worker) eventLoop() {
 				}
 
 				var stealShard bool
-				if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" {
+				if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" && shard.GetLeaseOwner() != "" {
 					if shard.GetLeaseTimeout().Before(time.Now().Add(time.Duration(w.kclConfig.LeaseStealingIntervalMillis) * time.Millisecond)) {
 						if shard.ClaimRequest != w.workerID {
+							// shard is being stolen
 							log.Debugf("Shard being stolen: %s", shard.ID)
 							continue
 						} else {
+							// attempt to steal the shard
 							stealShard = true
 							log.Debugf("Stealing shard: %s", shard.ID)
 						}
