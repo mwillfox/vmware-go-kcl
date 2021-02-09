@@ -79,7 +79,6 @@ type ShardConsumer struct {
 	kclConfig       *config.KinesisClientLibConfiguration
 	stop            *chan struct{}
 	consumerID      string
-	workerID        string
 	mService        metrics.MonitoringService
 	state           ShardConsumerState
 }
@@ -171,6 +170,12 @@ func (sc *ShardConsumer) getRecords(shard *par.ShardStatus) error {
 	retriedErrors := 0
 
 	for {
+		// ensure that shard has not been stolen and if so shut down record processor
+		if shard.GetLeaseOwner() != sc.consumerID {
+			shutdownInput := &kcl.ShutdownInput{ShutdownReason: kcl.REQUESTED, Checkpointer: recordCheckpointer}
+			sc.recordProcessor.Shutdown(shutdownInput)
+			return nil
+		}
 		if time.Now().UTC().After(shard.GetLeaseTimeout().Add(-time.Duration(sc.kclConfig.LeaseRefreshPeriodMillis) * time.Millisecond)) {
 			log.Debugf("Refreshing lease on shard: %s for worker: %s", shard.ID, sc.consumerID)
 			err = sc.checkpointer.GetLease(shard, sc.consumerID)
@@ -184,12 +189,6 @@ func (sc *ShardConsumer) getRecords(shard *par.ShardStatus) error {
 					shard.ID, sc.consumerID, err)
 				return err
 			}
-		}
-		// ensure that shard has not been stolen and if so shut down record processor
-		if shard.GetLeaseOwner() != sc.workerID {
-			shutdownInput := &kcl.ShutdownInput{ShutdownReason: kcl.REQUESTED, Checkpointer: recordCheckpointer}
-			sc.recordProcessor.Shutdown(shutdownInput)
-			return nil
 		}
 		getRecordsStartTime := time.Now()
 
