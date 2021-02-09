@@ -129,8 +129,16 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 				if currentAssignTo, ok := currentCheckpoint[LEASE_OWNER_KEY]; ok && currentAssignTo.S != nil {
 					assignTo := *currentAssignTo.S
 					if assignTo != "" {
-						checkpointer.log.Debugf("another worker: %s has a claim on this shard. Not going to renew the lease", claimRequest)
-						return errors.New(ErrShardClaimed)
+						// check to ensure the lease timeout is not past, otherwise the shard can become "stuck"
+						// and will never be claimed
+						if currentLeaseTimeout, ok := currentCheckpoint[LEASE_TIMEOUT_KEY]; ok {
+							if leaseTimeout, err := time.Parse(time.RFC3339, *currentLeaseTimeout.S); err == nil {
+								if time.Now().UTC().Before(leaseTimeout.Add(1 * time.Minute)) {
+									checkpointer.log.Debugf("another worker: %s has a claim on this shard. Not going to renew the lease", claimRequest)
+									return errors.New(ErrShardClaimed)
+								}
+							}
+						}
 					}
 				}
 			}
