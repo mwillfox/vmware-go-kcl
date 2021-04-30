@@ -28,6 +28,7 @@
 package checkpoint
 
 import (
+	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -124,8 +125,22 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 		return err
 	}
 
+	isClaimRequestExpired := shard.IsClaimRequestExpired(checkpointer.kclConfig)
+
+	var claimRequest string
+	if checkpointer.kclConfig.EnableLeaseStealing {
+		if currentCheckpointClaimRequest, ok := currentCheckpoint[ClaimRequestKey]; ok && currentCheckpointClaimRequest.S != nil {
+			claimRequest = *currentCheckpointClaimRequest.S
+			if newAssignTo != claimRequest && !isClaimRequestExpired {
+				checkpointer.log.Debugf("another worker: %s has a claim on this shard. Not going to renew the lease", claimRequest)
+				return errors.New(ErrShardClaimed)
+			}
+		}
+	}
+
 	assignedVar, assignedToOk := currentCheckpoint[LeaseOwnerKey]
 	leaseVar, leaseTimeoutOk := currentCheckpoint[LeaseTimeoutKey]
+
 	var conditionalExpression string
 	var expressionAttributeValues map[string]*dynamodb.AttributeValue
 
@@ -140,7 +155,7 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 			return err
 		}
 
-		if time.Now().UTC().Before(currentLeaseTimeout) && assignedTo != newAssignTo {
+		if time.Now().UTC().Before(currentLeaseTimeout) && assignedTo != newAssignTo && !isClaimRequestExpired {
 			return ErrLeaseNotAcquired{"current lease timeout not yet expired"}
 		}
 
@@ -175,9 +190,21 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 		marshalledCheckpoint[ParentShardIdKey] = &dynamodb.AttributeValue{S: aws.String(shard.ParentShardId)}
 	}
 
-	if shard.GetCheckpoint() != "" {
+	if checkpoint := shard.GetCheckpoint(); checkpoint != "" {
 		marshalledCheckpoint[SequenceNumberKey] = &dynamodb.AttributeValue{
-			S: aws.String(shard.GetCheckpoint()),
+			S: aws.String(checkpoint),
+		}
+	}
+
+	if checkpointer.kclConfig.EnableLeaseStealing {
+		if claimRequest != "" && claimRequest == newAssignTo && !isClaimRequestExpired {
+			if expressionAttributeValues == nil {
+				expressionAttributeValues = make(map[string]*dynamodb.AttributeValue)
+			}
+			conditionalExpression = conditionalExpression + " AND ClaimRequest = :claim_request"
+			expressionAttributeValues[":claim_request"] = &dynamodb.AttributeValue{
+				S: &claimRequest,
+			}
 		}
 	}
 
@@ -199,7 +226,7 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 
 // CheckpointSequence writes a checkpoint at the designated sequence ID
 func (checkpointer *DynamoCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
-	leaseTimeout := shard.LeaseTimeout.UTC().Format(time.RFC3339)
+	leaseTimeout := shard.GetLeaseTimeout().UTC().Format(time.RFC3339)
 	marshalledCheckpoint := map[string]*dynamodb.AttributeValue{
 		LeaseKeyKey: {
 			S: aws.String(shard.ID),
@@ -208,7 +235,7 @@ func (checkpointer *DynamoCheckpoint) CheckpointSequence(shard *par.ShardStatus)
 			S: aws.String(shard.GetCheckpoint()),
 		},
 		LeaseOwnerKey: {
-			S: aws.String(shard.AssignedTo),
+			S: aws.String(shard.GetLeaseOwner()),
 		},
 		LeaseTimeoutKey: {
 			S: aws.String(leaseTimeout),
@@ -239,6 +266,18 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 	if assignedTo, ok := checkpoint[LeaseOwnerKey]; ok {
 		shard.SetLeaseOwner(aws.StringValue(assignedTo.S))
 	}
+
+	// Use up-to-date leaseTimeout to avoid ConditionalCheckFailedException when claiming
+	if checkpointer.kclConfig.EnableLeaseStealing {
+		if leaseTimeout, ok := checkpoint[LeaseTimeoutKey]; ok && leaseTimeout.S != nil {
+			currentLeaseTimeout, err := time.Parse(time.RFC3339, aws.StringValue(leaseTimeout.S))
+			if err != nil {
+				return err
+			}
+			shard.LeaseTimeout = currentLeaseTimeout
+		}
+	}
+
 	return nil
 }
 
@@ -265,6 +304,12 @@ func (checkpointer *DynamoCheckpoint) RemoveLeaseOwner(shardID string) error {
 			},
 		},
 		UpdateExpression: aws.String("remove " + LeaseOwnerKey),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":assigned_to": {
+				S: aws.String(checkpointer.kclConfig.WorkerID),
+			},
+		},
+		ConditionExpression: aws.String("AssignedTo = :assigned_to"),
 	}
 
 	_, err := checkpointer.svc.UpdateItem(input)

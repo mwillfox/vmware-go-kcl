@@ -29,56 +29,28 @@ package checkpoint
 
 import (
 	"errors"
-	"fmt"
 
 	par "github.com/vmware/vmware-go-kcl/clientlibrary/partition"
 )
 
 const (
-	LeaseKeyKey       = "ShardID"
-	LeaseOwnerKey     = "AssignedTo"
-	LeaseTimeoutKey   = "LeaseTimeout"
-	SequenceNumberKey = "Checkpoint"
-	ParentShardIdKey  = "ParentShardId"
-
-	// We've completely processed all records in this shard.
-	ShardEnd = "SHARD_END"
-
-	// ErrLeaseNotAquired is returned when we failed to get a lock on the shard
-	ErrLeaseNotAquired = "Lease is already held by another node"
-
-	// ErrShardClaimed is returned when shard is claimed
-	ErrShardClaimed = "Shard is already claimed by another node"
+	ClaimRequestKey = "ClaimRequest"
 )
 
-type ErrLeaseNotAcquired struct {
-	cause string
-}
-
-func (e ErrLeaseNotAcquired) Error() string {
-	return fmt.Sprintf("lease not acquired: %s", e.cause)
-}
-
-// Checkpointer handles checkpointing when a record has been processed
-type Checkpointer interface {
-	// Init initialises the Checkpoint
+// Leasestealer handles stealing a lease for load balancing
+type Leasestealer interface {
+	// Init initialises the Leasestealer
 	Init() error
 
-	// GetLease attempts to gain a lock on the given shard
-	GetLease(*par.ShardStatus, string) error
+	// ListActiveWorkers returns active workers and their shards
+	ListActiveWorkers(map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error)
 
-	// CheckpointSequence writes a checkpoint at the designated sequence ID
-	CheckpointSequence(*par.ShardStatus) error
+	// ClaimShard claims a shard for stealing
+	ClaimShard(*par.ShardStatus, string) error
 
-	// FetchCheckpoint retrieves the checkpoint for the given shard
-	FetchCheckpoint(*par.ShardStatus) error
-
-	// RemoveLeaseInfo to remove lease info for shard entry because the shard no longer exists
-	RemoveLeaseInfo(string) error
-
-	// RemoveLeaseOwner to remove lease owner for the shard entry to make the shard available for reassignment
-	RemoveLeaseOwner(string) error
+	// SyncLeases updates worker's state of leases
+	SyncLeases(map[string]*par.ShardStatus) (map[string]*par.ShardStatus, error)
 }
 
-// ErrSequenceIDNotFound is returned by FetchCheckpoint when no SequenceID is found
-var ErrSequenceIDNotFound = errors.New("SequenceIDNotFoundForShard")
+// ErrShardNotAssigned is returned by ListActiveWorkers when no AssignedTo is found
+var ErrShardNotAssigned = errors.New("AssignedToNotFoundForShard")
