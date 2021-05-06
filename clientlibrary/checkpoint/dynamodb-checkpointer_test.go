@@ -39,8 +39,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbiface"
-	"github.com/stretchr/testify/assert"
-
 	cfg "github.com/vmware/vmware-go-kcl/clientlibrary/config"
 	par "github.com/vmware/vmware-go-kcl/clientlibrary/partition"
 )

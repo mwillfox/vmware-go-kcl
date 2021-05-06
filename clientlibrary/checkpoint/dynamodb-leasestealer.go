@@ -175,6 +175,33 @@ func (leasestealer *DynamoLeasestealer) ClaimShard(shard *par.ShardStatus, claim
 	return leasestealer.conditionalUpdate(conditionalExpression, expressionAttributeValues, marshalledCheckpoint)
 }
 
+func (Leasestealer *DynamoLeasestealer) SyncLeases(shardStatus map[string]*par.ShardStatus) (map[string]*par.ShardStatus, error) {
+	// create scan item input
+	scanInput := dynamodb.ScanInput{ConsistentRead: aws.Bool(false),
+		ProjectionExpression: aws.String("ShardID,AssignedTo"),
+		Select: aws.String("SPECIFIC_ATTRIBUTES"),
+		TableName: aws.String(Leasestealer.kclConfig.TableName),
+	}
+
+	// get scanPages result
+	err := Leasestealer.svc.ScanPages(&scanInput,
+		func (pages *dynamodb.ScanOutput, lastPage bool) bool{
+			results := pages.Items
+			for _, result := range results{
+				shardId, foundShardId := result["ShardID"]
+				assignedTo, foundAssignedTo := result["AssignedTo"]
+				if !foundShardId || !foundAssignedTo {
+					continue
+				}
+				// update shardStatus map
+				shardStatus[aws.StringValue(shardId.S)].AssignedTo = aws.StringValue(assignedTo.S)
+			}
+			return !lastPage
+		})
+
+	return shardStatus, err
+}
+
 func (leasestealer *DynamoLeasestealer) conditionalUpdate(conditionExpression string, expressionAttributeValues map[string]*dynamodb.AttributeValue, item map[string]*dynamodb.AttributeValue) error {
 	return leasestealer.putItem(&dynamodb.PutItemInput{
 		ConditionExpression:       aws.String(conditionExpression),

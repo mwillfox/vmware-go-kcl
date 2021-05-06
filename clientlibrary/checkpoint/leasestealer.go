@@ -47,6 +47,9 @@ type Leasestealer interface {
 
 	// ClaimShard claims a shard for stealing
 	ClaimShard(*par.ShardStatus, string) error
+
+	// SyncLeases updates worker's state of leases
+	SyncLeases(map[string]*par.ShardStatus) (map[string]*par.ShardStatus, error)
 }
 
 // ErrShardNotAssigned is returned by ListActiveWorkers when no AssignedTo is found
