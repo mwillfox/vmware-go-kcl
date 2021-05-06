@@ -103,6 +103,10 @@ func (sc *PollingShardConsumer) getRecords() error {
 	retriedErrors := 0
 
 	for {
+		// ensure that shard has not been stolen and if so stop processing records
+		if sc.shard.GetLeaseOwner() != sc.consumerID {
+			return nil
+		}
 		if time.Now().UTC().After(sc.shard.GetLeaseTimeout().Add(-time.Duration(sc.kclConfig.LeaseRefreshPeriodMillis) * time.Millisecond)) {
 			log.Debugf("Refreshing lease on shard: %s for worker: %s", sc.shard.ID, sc.consumerID)
 			err = sc.checkpointer.GetLease(sc.shard, sc.consumerID)
