@@ -26,36 +26,35 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/assert"
+
 	cfg "github.com/vmware/vmware-go-kcl/clientlibrary/config"
-	kc "github.com/vmware/vmware-go-kcl/clientlibrary/interfaces"
 	"github.com/vmware/vmware-go-kcl/clientlibrary/metrics"
 	"github.com/vmware/vmware-go-kcl/clientlibrary/metrics/cloudwatch"
 	"github.com/vmware/vmware-go-kcl/clientlibrary/metrics/prometheus"
-	"github.com/vmware/vmware-go-kcl/clientlibrary/utils"
 	wk "github.com/vmware/vmware-go-kcl/clientlibrary/worker"
 	"github.com/vmware/vmware-go-kcl/logger"
 	zaplogger "github.com/vmware/vmware-go-kcl/logger/zap"
 )
 
 const (
-	streamName = "kcl-test"
-	regionName = "us-west-2"
-	workerID   = "test-worker"
+	appName      = "appName"
+	streamName   = "kcl-test"
+	regionName   = "us-west-2"
+	workerID     = "test-worker"
+	consumerName = "enhanced-fan-out-consumer"
 )
 
-const specstr = `{"name":"kube-qQyhk","networking":{"containerNetworkCidr":"10.2.0.0/16"},"orgName":"BVT-Org-cLQch","projectName":"project-tDSJd","serviceLevel":"DEVELOPER","size":{"count":1},"version":"1.8.1-4"}`
 const metricsSystem = "cloudwatch"
 
 var shardID string
 
 func TestWorker(t *testing.T) {
-	// At miminal. use standard logrus logger
+	// At minimal. use standard logrus logger
 	// log := logger.NewLogrusLogger(logrus.StandardLogger())
 	//
 	// In order to have precise control over logging. Use logger with config
@@ -71,9 +70,9 @@ func TestWorker(t *testing.T) {
 	// Use logrus logger
 	log := logger.NewLogrusLoggerWithConfig(config)
 
-	kclConfig := cfg.NewKinesisClientLibConfig("appName", streamName, regionName, workerID).
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
-		WithMaxRecords(10).
+		WithMaxRecords(8).
 		WithMaxLeasesForWorker(1).
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000).
@@ -93,7 +92,7 @@ func TestWorkerWithTimestamp(t *testing.T) {
 	log := logger.NewLogrusLoggerWithConfig(config)
 
 	ts := time.Now().Add(time.Second * 5)
-	kclConfig := cfg.NewKinesisClientLibConfig("appName", streamName, regionName, workerID).
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithTimestampAtInitialPositionInStream(&ts).
 		WithMaxRecords(10).
 		WithMaxLeasesForWorker(1).
@@ -123,7 +122,7 @@ func TestWorkerWithSigInt(t *testing.T) {
 	// use zap logger
 	log := zaplogger.NewZapLoggerWithConfig(config)
 
-	kclConfig := cfg.NewKinesisClientLibConfig("appName", streamName, regionName, workerID).
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
 		WithMaxRecords(10).
 		WithMaxLeasesForWorker(1).
@@ -137,9 +136,11 @@ func TestWorkerWithSigInt(t *testing.T) {
 func TestWorkerStatic(t *testing.T) {
 	t.Skip("Need to provide actual credentials")
 
-	creds := credentials.NewStaticCredentials("AccessKeyId", "SecretAccessKey", "")
+	// Fill in the credentials for accessing Kinesis and DynamoDB.
+	// Note: use empty string as SessionToken for long-term credentials.
+	creds := credentials.NewStaticCredentials("AccessKeyId", "SecretAccessKey", "SessionToken")
 
-	kclConfig := cfg.NewKinesisClientLibConfigWithCredential("appName", streamName, regionName, workerID, creds).
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
 		WithInitialPositionInStream(cfg.LATEST).
 		WithMaxRecords(10).
 		WithMaxLeasesForWorker(1).
@@ -161,12 +162,102 @@ func TestWorkerAssumeRole(t *testing.T) {
 	// referenced by the "myRoleARN" ARN.
 	creds := stscreds.NewCredentials(sess, "arn:aws:iam::*:role/kcl-test-publisher")
 
-	kclConfig := cfg.NewKinesisClientLibConfigWithCredential("appName", streamName, regionName, workerID, creds).
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
 		WithInitialPositionInStream(cfg.LATEST).
 		WithMaxRecords(10).
 		WithMaxLeasesForWorker(1).
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
+
+	runTest(kclConfig, false, t)
+}
+
+func TestEnhancedFanOutConsumer(t *testing.T) {
+	// At miminal, use standard logrus logger
+	// log := logger.NewLogrusLogger(logrus.StandardLogger())
+	//
+	// In order to have precise control over logging. Use logger with config
+	config := logger.Configuration{
+		EnableConsole:     true,
+		ConsoleLevel:      logger.Debug,
+		ConsoleJSONFormat: false,
+		EnableFile:        true,
+		FileLevel:         logger.Info,
+		FileJSONFormat:    true,
+		Filename:          "log.log",
+	}
+	// Use logrus logger
+	log := logger.NewLogrusLoggerWithConfig(config)
+
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
+		WithInitialPositionInStream(cfg.LATEST).
+		WithEnhancedFanOutConsumerName(consumerName).
+		WithMaxRecords(10).
+		WithMaxLeasesForWorker(1).
+		WithShardSyncIntervalMillis(5000).
+		WithFailoverTimeMillis(300000).
+		WithLogger(log)
+
+	runTest(kclConfig, false, t)
+}
+
+func TestEnhancedFanOutConsumerDefaultConsumerName(t *testing.T) {
+	// At miminal, use standard logrus logger
+	// log := logger.NewLogrusLogger(logrus.StandardLogger())
+	//
+	// In order to have precise control over logging. Use logger with config
+	config := logger.Configuration{
+		EnableConsole:     true,
+		ConsoleLevel:      logger.Debug,
+		ConsoleJSONFormat: false,
+		EnableFile:        true,
+		FileLevel:         logger.Info,
+		FileJSONFormat:    true,
+		Filename:          "log.log",
+	}
+	// Use logrus logger
+	log := logger.NewLogrusLoggerWithConfig(config)
+
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
+		WithInitialPositionInStream(cfg.LATEST).
+		WithEnhancedFanOutConsumer(true).
+		WithMaxRecords(10).
+		WithMaxLeasesForWorker(1).
+		WithShardSyncIntervalMillis(5000).
+		WithFailoverTimeMillis(300000).
+		WithLogger(log)
+
+	runTest(kclConfig, false, t)
+}
+
+func TestEnhancedFanOutConsumerARN(t *testing.T) {
+	t.Skip("Need to provide actual consumerARN")
+
+	consumerARN := "arn:aws:kinesis:*:stream/kcl-test/consumer/fanout-poc-consumer-test:*"
+	// At miminal, use standard logrus logger
+	// log := logger.NewLogrusLogger(logrus.StandardLogger())
+	//
+	// In order to have precise control over logging. Use logger with config
+	config := logger.Configuration{
+		EnableConsole:     true,
+		ConsoleLevel:      logger.Debug,
+		ConsoleJSONFormat: false,
+		EnableFile:        true,
+		FileLevel:         logger.Info,
+		FileJSONFormat:    true,
+		Filename:          "log.log",
+	}
+	// Use logrus logger
+	log := logger.NewLogrusLoggerWithConfig(config)
+
+	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
+		WithInitialPositionInStream(cfg.LATEST).
+		WithEnhancedFanOutConsumerARN(consumerARN).
+		WithMaxRecords(10).
+		WithMaxLeasesForWorker(1).
+		WithShardSyncIntervalMillis(5000).
+		WithFailoverTimeMillis(300000).
+		WithLogger(log)
 
 	runTest(kclConfig, false, t)
 }
@@ -196,15 +287,8 @@ func runTest(kclConfig *cfg.KinesisClientLibConfiguration, triggersig bool, t *t
 	}()
 
 	// Put some data into stream.
-	t.Log("Putting data into stream.")
-	for i := 0; i < 100; i++ {
-		// Use random string as partition key to ensure even distribution across shards
-		err := worker.Publish(streamName, utils.RandStringBytesMaskImpr(10), []byte(specstr))
-		if err != nil {
-			t.Errorf("Errorin Publish. %+v", err)
-		}
-	}
-	t.Log("Done putting data into stream.")
+	kc := NewKinesisClient(t, regionName, kclConfig.KinesisEndpoint, kclConfig.KinesisCredentials)
+	publishSomeData(t, kc)
 
 	if triggersig {
 		t.Log("Trigger signal SIGINT")
@@ -250,60 +334,4 @@ func getMetricsConfig(kclConfig *cfg.KinesisClientLibConfiguration, service stri
 	}
 
 	return nil
-}
-
-// Record processor factory is used to create RecordProcessor
-func recordProcessorFactory(t *testing.T) kc.IRecordProcessorFactory {
-	return &dumpRecordProcessorFactory{t: t}
-}
-
-// simple record processor and dump everything
-type dumpRecordProcessorFactory struct {
-	t *testing.T
-}
-
-func (d *dumpRecordProcessorFactory) CreateProcessor() kc.IRecordProcessor {
-	return &dumpRecordProcessor{
-		t: d.t,
-	}
-}
-
-// Create a dump record processor for printing out all data from record.
-type dumpRecordProcessor struct {
-	t *testing.T
-}
-
-func (dd *dumpRecordProcessor) Initialize(input *kc.InitializationInput) {
-	dd.t.Logf("Processing SharId: %v at checkpoint: %v", input.ShardId, aws.StringValue(input.ExtendedSequenceNumber.SequenceNumber))
-	shardID = input.ShardId
-}
-
-func (dd *dumpRecordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
-	dd.t.Log("Processing Records...")
-
-	// don't process empty record
-	if len(input.Records) == 0 {
-		return
-	}
-
-	for _, v := range input.Records {
-		dd.t.Logf("Record = %s", v.Data)
-		assert.Equal(dd.t, specstr, string(v.Data))
-	}
-
-	// checkpoint it after processing this batch
-	lastRecordSequenceNubmer := input.Records[len(input.Records)-1].SequenceNumber
-	dd.t.Logf("Checkpoint progress at: %v,  MillisBehindLatest = %v", lastRecordSequenceNubmer, input.MillisBehindLatest)
-	input.Checkpointer.Checkpoint(lastRecordSequenceNubmer)
-}
-
-func (dd *dumpRecordProcessor) Shutdown(input *kc.ShutdownInput) {
-	dd.t.Logf("Shutdown Reason: %v", aws.StringValue(kc.ShutdownReasonMessage(input.ShutdownReason)))
-
-	// When the value of {@link ShutdownInput#getShutdownReason()} is
-	// {@link com.amazonaws.services.kinesis.clientlibrary.lib.worker.ShutdownReason#TERMINATE} it is required that you
-	// checkpoint. Failure to do so will result in an IllegalArgumentException, and the KCL no longer making progress.
-	if input.ShutdownReason == kc.TERMINATE {
-		input.Checkpointer.Checkpoint(nil)
-	}
 }

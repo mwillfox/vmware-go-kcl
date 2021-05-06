@@ -28,6 +28,7 @@
 package worker
 
 import (
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -50,9 +51,10 @@ import (
  * the shards).
  */
 type Worker struct {
-	streamName string
-	regionName string
-	workerID   string
+	streamName  string
+	regionName  string
+	workerID    string
+	consumerARN string
 
 	processorFactory kcl.IRecordProcessorFactory
 	kclConfig        *config.KinesisClientLibConfiguration
@@ -156,20 +158,6 @@ func (w *Worker) Shutdown() {
 	log.Infof("Worker loop is complete. Exiting from worker.")
 }
 
-// Publish to write some data into stream. This function is mainly used for testing purpose.
-func (w *Worker) Publish(streamName, partitionKey string, data []byte) error {
-	log := w.kclConfig.Logger
-	_, err := w.kc.PutRecord(&kinesis.PutRecordInput{
-		Data:         data,
-		StreamName:   aws.String(streamName),
-		PartitionKey: aws.String(partitionKey),
-	})
-	if err != nil {
-		log.Errorf("Error in publishing data to %s/%s. Error: %+v", streamName, partitionKey, err)
-	}
-	return err
-}
-
 // initialize
 func (w *Worker) initialize() error {
 	log := w.kclConfig.Logger
@@ -203,6 +191,18 @@ func (w *Worker) initialize() error {
 		log.Infof("Use custom checkpointer implementation.")
 	}
 
+	if w.kclConfig.EnableEnhancedFanOutConsumer {
+		log.Debugf("Enhanced fan-out is enabled")
+		w.consumerARN = w.kclConfig.EnhancedFanOutConsumerARN
+		if w.consumerARN == "" {
+			var err error
+			w.consumerARN, err = w.fetchConsumerARNWithRetry()
+			if err != nil {
+				log.Errorf("Failed to fetch consumer ARN for: %s, %v", w.kclConfig.EnhancedFanOutConsumerName, err)
+				return err
+			}
+		}
+	}
 	if w.kclConfig.EnableLeaseStealing {
 		if w.leasestealer == nil {
 			log.Infof("Creating DynamoDB based leasestealer")
@@ -243,25 +243,39 @@ func (w *Worker) initialize() error {
 	return nil
 }
 
-// newShardConsumer to create a shard consumer instance
-func (w *Worker) newShardConsumer(shard *par.ShardStatus) *ShardConsumer {
-	return &ShardConsumer{
-		streamName:      w.streamName,
+// newShardConsumer creates shard consumer for the specified shard
+func (w *Worker) newShardConsumer(shard *par.ShardStatus) shardConsumer {
+	common := commonShardConsumer{
 		shard:           shard,
 		kc:              w.kc,
 		checkpointer:    w.checkpointer,
 		recordProcessor: w.processorFactory.CreateProcessor(),
 		kclConfig:       w.kclConfig,
-		consumerID:      w.workerID,
-		stop:            w.stop,
 		mService:        w.mService,
-		state:           WAITING_ON_PARENT_SHARDS,
+	}
+	if w.kclConfig.EnableEnhancedFanOutConsumer {
+		w.kclConfig.Logger.Infof("Start enhanced fan-out shard consumer for shard: %v", shard.ID)
+		return &FanOutShardConsumer{
+			commonShardConsumer: common,
+			consumerARN:         w.consumerARN,
+			consumerID:          w.workerID,
+			stop:                w.stop,
+		}
+	}
+	w.kclConfig.Logger.Infof("Start polling shard consumer for shard: %v", shard.ID)
+	return &PollingShardConsumer{
+		commonShardConsumer: common,
+		streamName:          w.streamName,
+		consumerID:          w.workerID,
+		stop:                w.stop,
+		mService:            w.mService,
 	}
 }
 
 // eventLoop
 func (w *Worker) eventLoop() {
 	log := w.kclConfig.Logger
+	lastLeaseSync := time.Now()
 
 	var foundShards int
 	for {
@@ -269,7 +283,7 @@ func (w *Worker) eventLoop() {
 		// starts at the same time, this decreases the probability of them calling
 		// kinesis.DescribeStream at the same time, and hit the hard-limit on aws API calls.
 		// On average the period remains the same so that doesn't affect behavior.
-		shardSyncSleep := w.kclConfig.ShardSyncIntervalMillis/2 + w.rng.Intn(int(w.kclConfig.ShardSyncIntervalMillis))
+		shardSyncSleep := w.kclConfig.ShardSyncIntervalMillis/2 + w.rng.Intn(w.kclConfig.ShardSyncIntervalMillis)
 
 		err := w.syncShard()
 		if err != nil {
@@ -283,10 +297,10 @@ func (w *Worker) eventLoop() {
 			log.Infof("Found %d shards", foundShards)
 		}
 
-		// Count the number of leases hold by this worker excluding the processed shard
+		// Count the number of leases held by this worker excluding the processed shard
 		counter := 0
 		for _, shard := range w.shardStatus {
-			if shard.GetLeaseOwner() == w.workerID && shard.GetCheckpoint() != chk.SHARD_END {
+			if shard.GetLeaseOwner() == w.workerID && shard.GetCheckpoint() != chk.ShardEnd {
 				counter++
 			}
 		}
@@ -310,21 +324,20 @@ func (w *Worker) eventLoop() {
 				}
 
 				// The shard is closed and we have processed all records
-				if shard.GetCheckpoint() == chk.SHARD_END {
+				if shard.GetCheckpoint() == chk.ShardEnd {
 					continue
 				}
 
 				var stealShard bool
-				if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" && shard.GetLeaseOwner() != "" {
-					if shard.GetLeaseTimeout().Before(time.Now().Add(time.Duration(w.kclConfig.LeaseStealingIntervalMillis) * time.Millisecond)) {
-						if shard.ClaimRequest != w.workerID {
-							// shard is being stolen
-							log.Debugf("Shard being stolen: %s", shard.ID)
-							continue
-						} else {
-							// attempt to steal the shard
+				if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" {
+					upcomingStealingInterval := time.Now().UTC().Add(time.Duration(w.kclConfig.LeaseStealingIntervalMillis) * time.Millisecond)
+					if shard.GetLeaseTimeout().Before(upcomingStealingInterval) && !shard.IsClaimRequestExpired(w.kclConfig) {
+						if shard.ClaimRequest == w.workerID {
 							stealShard = true
 							log.Debugf("Stealing shard: %s", shard.ID)
+						} else {
+							log.Debugf("Shard being stolen: %s", shard.ID)
+							continue
 						}
 					}
 				}
@@ -332,7 +345,7 @@ func (w *Worker) eventLoop() {
 				err = w.checkpointer.GetLease(shard, w.workerID)
 				if err != nil {
 					// cannot get lease on the shard
-					if err.Error() != chk.ErrLeaseNotAquired {
+					if !errors.As(err, &chk.ErrLeaseNotAcquired{}) {
 						log.Errorf("Cannot get lease: %+v", err)
 					}
 					continue
@@ -345,23 +358,20 @@ func (w *Worker) eventLoop() {
 
 				// log metrics on got lease
 				w.mService.LeaseGained(shard.ID)
-
-				log.Infof("Start Shard Consumer for shard: %v", shard.ID)
-				sc := w.newShardConsumer(shard)
 				w.waitGroup.Add(1)
-				go func() {
+				go func(shard *par.ShardStatus) {
 					defer w.waitGroup.Done()
-					if err := sc.getRecords(shard); err != nil {
+					if err := w.newShardConsumer(shard).getRecords(); err != nil {
 						log.Errorf("Error in getRecords: %+v", err)
 					}
-				}()
+				}(shard)
 				// exit from for loop and not to grab more shard for now.
 				break
 			}
 		}
 
 		if w.kclConfig.EnableLeaseStealing {
-			err = w.rebalance()
+			err = w.rebalance(&lastLeaseSync)
 			if err != nil {
 				log.Warnf("Error in rebalance: %+v", err)
 			}
@@ -377,8 +387,20 @@ func (w *Worker) eventLoop() {
 	}
 }
 
-func (w *Worker) rebalance() error {
+func (w *Worker) rebalance(lastLeaseSync *time.Time) error {
 	log := w.kclConfig.Logger
+
+	// perform lease syncing if after interval
+	if (lastLeaseSync.Add(time.Duration(w.kclConfig.LeaseSyncingTimeIntervalMillis) * time.Millisecond)).Before(time.Now()) {
+		*lastLeaseSync = time.Now()
+		updatedShardStatus, err := w.leasestealer.SyncLeases(w.shardStatus)
+		if err != nil {
+			log.Debugf("Error performing SyncLeases. workerID: %s. Error: %+v ", w.workerID, err)
+			return err
+		}
+		w.shardStatus = updatedShardStatus
+		log.Debugf("Lease sync completed. Next lease sync will occur in %s", time.Duration(w.kclConfig.LeaseSyncingTimeIntervalMillis)*time.Millisecond)
+	}
 
 	workers, err := w.leasestealer.ListActiveWorkers(w.shardStatus)
 	if err != nil {
@@ -491,7 +513,7 @@ func (w *Worker) getShardIDs(nextToken string, shardInfo map[string]bool) error 
 			w.shardStatus[*s.ShardId] = &par.ShardStatus{
 				ID:                     *s.ShardId,
 				ParentShardId:          aws.StringValue(s.ParentShardId),
-				Mux:                    &sync.Mutex{},
+				Mux:                    &sync.RWMutex{},
 				StartingSequenceNumber: aws.StringValue(s.SequenceNumberRange.StartingSequenceNumber),
 				EndingSequenceNumber:   aws.StringValue(s.SequenceNumberRange.EndingSequenceNumber),
 			}

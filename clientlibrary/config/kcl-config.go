@@ -37,9 +37,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/vmware/vmware-go-kcl/clientlibrary/metrics"
-
 	"github.com/aws/aws-sdk-go/aws/credentials"
+
+	"github.com/vmware/vmware-go-kcl/clientlibrary/metrics"
 	"github.com/vmware/vmware-go-kcl/clientlibrary/utils"
 	"github.com/vmware/vmware-go-kcl/logger"
 )
@@ -73,30 +73,33 @@ func NewKinesisClientLibConfigWithCredentials(applicationName, streamName, regio
 		KinesisCredentials:                               kiniesisCreds,
 		DynamoDBCredentials:                              dynamodbCreds,
 		TableName:                                        applicationName,
+		EnhancedFanOutConsumerName:                       applicationName,
 		StreamName:                                       streamName,
 		RegionName:                                       regionName,
 		WorkerID:                                         workerID,
-		InitialPositionInStream:                          DEFAULT_INITIAL_POSITION_IN_STREAM,
-		InitialPositionInStreamExtended:                  *newInitialPosition(DEFAULT_INITIAL_POSITION_IN_STREAM),
-		FailoverTimeMillis:                               DEFAULT_FAILOVER_TIME_MILLIS,
-		LeaseRefreshPeriodMillis:                         DEFAULT_LEASE_REFRESH_PERIOD_MILLIS,
-		MaxRecords:                                       DEFAULT_MAX_RECORDS,
-		IdleTimeBetweenReadsInMillis:                     DEFAULT_IDLETIME_BETWEEN_READS_MILLIS,
-		CallProcessRecordsEvenForEmptyRecordList:         DEFAULT_DONT_CALL_PROCESS_RECORDS_FOR_EMPTY_RECORD_LIST,
-		ParentShardPollIntervalMillis:                    DEFAULT_PARENT_SHARD_POLL_INTERVAL_MILLIS,
-		ShardSyncIntervalMillis:                          DEFAULT_SHARD_SYNC_INTERVAL_MILLIS,
-		CleanupTerminatedShardsBeforeExpiry:              DEFAULT_CLEANUP_LEASES_UPON_SHARDS_COMPLETION,
-		TaskBackoffTimeMillis:                            DEFAULT_TASK_BACKOFF_TIME_MILLIS,
-		ValidateSequenceNumberBeforeCheckpointing:        DEFAULT_VALIDATE_SEQUENCE_NUMBER_BEFORE_CHECKPOINTING,
-		ShutdownGraceMillis:                              DEFAULT_SHUTDOWN_GRACE_MILLIS,
-		MaxLeasesForWorker:                               DEFAULT_MAX_LEASES_FOR_WORKER,
-		MaxLeasesToStealAtOneTime:                        DEFAULT_MAX_LEASES_TO_STEAL_AT_ONE_TIME,
-		InitialLeaseTableReadCapacity:                    DEFAULT_INITIAL_LEASE_TABLE_READ_CAPACITY,
-		InitialLeaseTableWriteCapacity:                   DEFAULT_INITIAL_LEASE_TABLE_WRITE_CAPACITY,
-		SkipShardSyncAtWorkerInitializationIfLeasesExist: DEFAULT_SKIP_SHARD_SYNC_AT_STARTUP_IF_LEASES_EXIST,
-		Logger:                      logger.GetDefaultLogger(),
-		EnableLeaseStealing:         DEFAULT_ENABLE_LEASE_STEALING,
-		LeaseStealingIntervalMillis: DEFAULT_LEASE_STEALING_INTERVAL_MILLIS,
+		InitialPositionInStream:                          DefaultInitialPositionInStream,
+		InitialPositionInStreamExtended:                  *newInitialPosition(DefaultInitialPositionInStream),
+		FailoverTimeMillis:                               DefaultFailoverTimeMillis,
+		LeaseRefreshPeriodMillis:                         DefaultLeaseRefreshPeriodMillis,
+		MaxRecords:                                       DefaultMaxRecords,
+		IdleTimeBetweenReadsInMillis:                     DefaultIdletimeBetweenReadsMillis,
+		CallProcessRecordsEvenForEmptyRecordList:         DefaultDontCallProcessRecordsForEmptyRecordList,
+		ParentShardPollIntervalMillis:                    DefaultParentShardPollIntervalMillis,
+		ShardSyncIntervalMillis:                          DefaultShardSyncIntervalMillis,
+		CleanupTerminatedShardsBeforeExpiry:              DefaultCleanupLeasesUponShardsCompletion,
+		TaskBackoffTimeMillis:                            DefaultTaskBackoffTimeMillis,
+		ValidateSequenceNumberBeforeCheckpointing:        DefaultValidateSequenceNumberBeforeCheckpointing,
+		ShutdownGraceMillis:                              DefaultShutdownGraceMillis,
+		MaxLeasesForWorker:                               DefaultMaxLeasesForWorker,
+		MaxLeasesToStealAtOneTime:                        DefaultMaxLeasesToStealAtOneTime,
+		InitialLeaseTableReadCapacity:                    DefaultInitialLeaseTableReadCapacity,
+		InitialLeaseTableWriteCapacity:                   DefaultInitialLeaseTableWriteCapacity,
+		SkipShardSyncAtWorkerInitializationIfLeasesExist: DefaultSkipShardSyncAtStartupIfLeasesExist,
+		EnableLeaseStealing:                              DefaultEnableLeaseStealing,
+		LeaseStealingIntervalMillis:                      DefaultLeaseStealingIntervalMillis,
+		LeaseStealingClaimTimeoutMillis:                  DefaultLeaseStealingClaimTimeoutMillis,
+		LeaseSyncingTimeIntervalMillis:                   DefaultLeaseSyncingIntervalMillis,
+		Logger:                                           logger.GetDefaultLogger(),
 	}
 }
 
@@ -215,6 +218,34 @@ func (c *KinesisClientLibConfiguration) WithMonitoringService(mService metrics.M
 	return c
 }
 
+// WithEnhancedFanOutConsumer sets EnableEnhancedFanOutConsumer. If enhanced fan-out is enabled and ConsumerName is not specified ApplicationName is used as ConsumerName.
+// For more info see: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+// Note: You can register up to twenty consumers per stream to use enhanced fan-out.
+func (c *KinesisClientLibConfiguration) WithEnhancedFanOutConsumer(enable bool) *KinesisClientLibConfiguration {
+	c.EnableEnhancedFanOutConsumer = enable
+	return c
+}
+
+// WithEnhancedFanOutConsumerName enables enhanced fan-out consumer with the specified name
+// For more info see: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+// Note: You can register up to twenty consumers per stream to use enhanced fan-out.
+func (c *KinesisClientLibConfiguration) WithEnhancedFanOutConsumerName(consumerName string) *KinesisClientLibConfiguration {
+	checkIsValueNotEmpty("EnhancedFanOutConsumerName", consumerName)
+	c.EnhancedFanOutConsumerName = consumerName
+	c.EnableEnhancedFanOutConsumer = true
+	return c
+}
+
+// WithEnhancedFanOutConsumerARN enables enhanced fan-out consumer with the specified consumer ARN
+// For more info see: https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html
+// Note: You can register up to twenty consumers per stream to use enhanced fan-out.
+func (c *KinesisClientLibConfiguration) WithEnhancedFanOutConsumerARN(consumerARN string) *KinesisClientLibConfiguration {
+	checkIsValueNotEmpty("EnhancedFanOutConsumerARN", consumerARN)
+	c.EnhancedFanOutConsumerARN = consumerARN
+	c.EnableEnhancedFanOutConsumer = true
+	return c
+}
+
 func (c *KinesisClientLibConfiguration) WithLeaseStealing(enableLeaseStealing bool) *KinesisClientLibConfiguration {
 	c.EnableLeaseStealing = enableLeaseStealing
 	return c
@@ -222,5 +253,10 @@ func (c *KinesisClientLibConfiguration) WithLeaseStealing(enableLeaseStealing bo
 
 func (c *KinesisClientLibConfiguration) WithLeaseStealingIntervalMillis(leaseStealingIntervalMillis int) *KinesisClientLibConfiguration {
 	c.LeaseStealingIntervalMillis = leaseStealingIntervalMillis
+	return c
+}
+
+func (c *KinesisClientLibConfiguration) WithLeaseSyncingIntervalMillis(leaseSyncingIntervalMillis int) *KinesisClientLibConfiguration {
+	c.LeaseSyncingTimeIntervalMillis = leaseSyncingIntervalMillis
 	return c
 }

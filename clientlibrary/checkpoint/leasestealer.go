@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	CLAIM_REQUEST_KEY = "ClaimRequest"
+	ClaimRequestKey = "ClaimRequest"
 )
 
 // Leasestealer handles stealing a lease for load balancing

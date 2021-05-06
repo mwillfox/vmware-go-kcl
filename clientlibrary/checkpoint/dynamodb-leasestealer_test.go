@@ -86,17 +86,17 @@ func TestListActiveWorkers(t *testing.T) {
 	}
 
 	shardStatus := map[string]*par.ShardStatus{
-		"0000": {ID: "0000", AssignedTo: "worker_1", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0001": {ID: "0001", AssignedTo: "worker_2", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0002": {ID: "0002", AssignedTo: "worker_4", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0003": {ID: "0003", AssignedTo: "worker_0", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0004": {ID: "0004", AssignedTo: "worker_1", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0005": {ID: "0005", AssignedTo: "worker_3", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0006": {ID: "0006", AssignedTo: "worker_3", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0007": {ID: "0007", AssignedTo: "worker_0", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0008": {ID: "0008", AssignedTo: "worker_4", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0009": {ID: "0009", AssignedTo: "worker_2", Checkpoint: "", Mux: &sync.Mutex{}},
-		"0010": {ID: "0010", AssignedTo: "worker_0", Checkpoint: SHARD_END, Mux: &sync.Mutex{}},
+		"0000": {ID: "0000", AssignedTo: "worker_1", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0001": {ID: "0001", AssignedTo: "worker_2", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0002": {ID: "0002", AssignedTo: "worker_4", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0003": {ID: "0003", AssignedTo: "worker_0", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0004": {ID: "0004", AssignedTo: "worker_1", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0005": {ID: "0005", AssignedTo: "worker_3", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0006": {ID: "0006", AssignedTo: "worker_3", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0007": {ID: "0007", AssignedTo: "worker_0", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0008": {ID: "0008", AssignedTo: "worker_4", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0009": {ID: "0009", AssignedTo: "worker_2", Checkpoint: "", Mux: &sync.RWMutex{}},
+		"0010": {ID: "0010", AssignedTo: "worker_0", Checkpoint: ShardEnd, Mux: &sync.RWMutex{}},
 	}
 
 	workers, err := leasestealer.ListActiveWorkers(shardStatus)
@@ -130,7 +130,7 @@ func TestListActiveWorkersErrShardNotAssigned(t *testing.T) {
 	}
 
 	shardStatus := map[string]*par.ShardStatus{
-		"0000": {ID: "0000", Mux: &sync.Mutex{}},
+		"0000": {ID: "0000", Mux: &sync.RWMutex{}},
 	}
 
 	_, err = leasestealer.ListActiveWorkers(shardStatus)
@@ -177,7 +177,7 @@ func TestClaimShard(t *testing.T) {
 	shard := &par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "deadbeef",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}
 
 	err := leasestealer.ClaimShard(shard, "ijkl-mnop")
@@ -185,7 +185,7 @@ func TestClaimShard(t *testing.T) {
 		t.Errorf("Shard not claimed %s", err)
 	}
 
-	claimRequest, ok := svc.item[CLAIM_REQUEST_KEY]
+	claimRequest, ok := svc.item[ClaimRequestKey]
 	if !ok {
 		t.Error("Expected claimRequest to be set by ClaimShard")
 	} else if *claimRequest.S != "ijkl-mnop" {
@@ -194,7 +194,7 @@ func TestClaimShard(t *testing.T) {
 
 	status := &par.ShardStatus{
 		ID:  shard.ID,
-		Mux: &sync.Mutex{},
+		Mux: &sync.RWMutex{},
 	}
 	checkpoint.FetchCheckpoint(status)
 

@@ -95,7 +95,7 @@ func (leasestealer *DynamoLeasestealer) Init() error {
 func (leasestealer *DynamoLeasestealer) ListActiveWorkers(shardStatus map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error) {
 	workers := map[string][]*par.ShardStatus{}
 	for _, shard := range shardStatus {
-		if shard.GetCheckpoint() == SHARD_END {
+		if shard.GetCheckpoint() == ShardEnd {
 			continue
 		}
 
@@ -132,16 +132,16 @@ func (leasestealer *DynamoLeasestealer) ClaimShard(shard *par.ShardStatus, claim
 	}
 
 	marshalledCheckpoint := map[string]*dynamodb.AttributeValue{
-		LEASE_KEY_KEY: {
+		LeaseKeyKey: {
 			S: &shard.ID,
 		},
-		LEASE_TIMEOUT_KEY: {
+		LeaseTimeoutKey: {
 			S: &leaseTimeoutString,
 		},
-		CHECKPOINT_SEQUENCE_NUMBER_KEY: {
+		SequenceNumberKey: {
 			S: &shard.Checkpoint,
 		},
-		CLAIM_REQUEST_KEY: {
+		ClaimRequestKey: {
 			S: &claimID,
 		},
 	}
@@ -149,16 +149,16 @@ func (leasestealer *DynamoLeasestealer) ClaimShard(shard *par.ShardStatus, claim
 	if leaseOwner := shard.GetLeaseOwner(); leaseOwner == "" {
 		conditionalExpression += " AND attribute_not_exists(AssignedTo)"
 	} else {
-		marshalledCheckpoint[LEASE_OWNER_KEY] = &dynamodb.AttributeValue{S: &leaseOwner}
+		marshalledCheckpoint[LeaseOwnerKey] = &dynamodb.AttributeValue{S: &leaseOwner}
 		conditionalExpression += "AND AssignedTo = :assigned_to"
 		expressionAttributeValues[":assigned_to"] = &dynamodb.AttributeValue{S: &leaseOwner}
 	}
 
 	if checkpoint := shard.GetCheckpoint(); checkpoint == "" {
 		conditionalExpression += " AND attribute_not_exists(Checkpoint)"
-	} else if checkpoint == SHARD_END {
+	} else if checkpoint == ShardEnd {
 		conditionalExpression += " AND Checkpoint <> :checkpoint"
-		expressionAttributeValues[":checkpoint"] = &dynamodb.AttributeValue{S: aws.String(SHARD_END)}
+		expressionAttributeValues[":checkpoint"] = &dynamodb.AttributeValue{S: aws.String(ShardEnd)}
 	} else {
 		conditionalExpression += " AND Checkpoint = :checkpoint"
 		expressionAttributeValues[":checkpoint"] = &dynamodb.AttributeValue{S: &checkpoint}
@@ -167,7 +167,7 @@ func (leasestealer *DynamoLeasestealer) ClaimShard(shard *par.ShardStatus, claim
 	if shard.ParentShardId == "" {
 		conditionalExpression += " AND attribute_not_exists(ParentShardId)"
 	} else {
-		marshalledCheckpoint[PARENT_SHARD_ID_KEY] = &dynamodb.AttributeValue{S: aws.String(shard.ParentShardId)}
+		marshalledCheckpoint[ParentShardIdKey] = &dynamodb.AttributeValue{S: aws.String(shard.ParentShardId)}
 		conditionalExpression += " AND ParentShardId = :parent_shard"
 		expressionAttributeValues[":parent_shard"] = &dynamodb.AttributeValue{S: &shard.ParentShardId}
 	}

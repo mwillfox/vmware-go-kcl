@@ -39,6 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbiface"
+	"github.com/stretchr/testify/assert"
 
 	cfg "github.com/vmware/vmware-go-kcl/clientlibrary/config"
 	par "github.com/vmware/vmware-go-kcl/clientlibrary/partition"
@@ -75,7 +76,7 @@ func TestGetLeaseNotAquired(t *testing.T) {
 	err := checkpoint.GetLease(&par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}, "abcd-efgh")
 	if err != nil {
 		t.Errorf("Error getting lease %s", err)
@@ -84,9 +85,9 @@ func TestGetLeaseNotAquired(t *testing.T) {
 	err = checkpoint.GetLease(&par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}, "ijkl-mnop")
-	if err == nil || err.Error() != ErrLeaseNotAquired {
+	if err == nil || !errors.As(err, &ErrLeaseNotAcquired{}) {
 		t.Errorf("Got a lease when it was already held by abcd-efgh: %s", err)
 	}
 }
@@ -124,7 +125,7 @@ func TestGetLeaseAquired(t *testing.T) {
 	shard := &par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "deadbeef",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}
 	err := checkpoint.GetLease(shard, "ijkl-mnop")
 
@@ -132,7 +133,7 @@ func TestGetLeaseAquired(t *testing.T) {
 		t.Errorf("Lease not aquired after timeout %s", err)
 	}
 
-	id, ok := svc.item[CHECKPOINT_SEQUENCE_NUMBER_KEY]
+	id, ok := svc.item[SequenceNumberKey]
 	if !ok {
 		t.Error("Expected checkpoint to be set by GetLease")
 	} else if *id.S != "deadbeef" {
@@ -145,7 +146,7 @@ func TestGetLeaseAquired(t *testing.T) {
 
 	status := &par.ShardStatus{
 		ID:  shard.ID,
-		Mux: &sync.Mutex{},
+		Mux: &sync.RWMutex{},
 	}
 	checkpoint.FetchCheckpoint(status)
 
@@ -161,7 +162,7 @@ func TestGetLeaseShardClaimed(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]*dynamodb.AttributeValue{
-			CLAIM_REQUEST_KEY: {S: aws.String("ijkl-mnop")},
+			ClaimRequestKey: {S: aws.String("ijkl-mnop")},
 		},
 	}
 	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc").
@@ -177,7 +178,7 @@ func TestGetLeaseShardClaimed(t *testing.T) {
 	err := checkpoint.GetLease(&par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}, "abcd-efgh")
 	if err == nil || err.Error() != ErrShardClaimed {
 		t.Errorf("Got a lease when it was already claimed by by ijkl-mnop: %s", err)
@@ -186,7 +187,7 @@ func TestGetLeaseShardClaimed(t *testing.T) {
 	err = checkpoint.GetLease(&par.ShardStatus{
 		ID:         "0001",
 		Checkpoint: "",
-		Mux:        &sync.Mutex{},
+		Mux:        &sync.RWMutex{},
 	}, "ijkl-mnop")
 	if err != nil {
 		t.Errorf("Error getting lease %s", err)
@@ -199,9 +200,9 @@ func TestFetchCheckpointWithStealing(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]*dynamodb.AttributeValue{
-			CHECKPOINT_SEQUENCE_NUMBER_KEY: {S: aws.String("deadbeef")},
-			LEASE_OWNER_KEY:                {S: aws.String("abcd-efgh")},
-			LEASE_TIMEOUT_KEY: {
+			SequenceNumberKey: {S: aws.String("deadbeef")},
+			LeaseOwnerKey:     {S: aws.String("abcd-efgh")},
+			LeaseTimeoutKey: {
 				S: aws.String(future.Format(time.RFC3339)),
 			},
 		},
@@ -222,12 +223,12 @@ func TestFetchCheckpointWithStealing(t *testing.T) {
 		ID:           "0001",
 		Checkpoint:   "",
 		LeaseTimeout: time.Now(),
-		Mux:          &sync.Mutex{},
+		Mux:          &sync.RWMutex{},
 	}
 
 	checkpoint.FetchCheckpoint(status)
 
-	leaseTimeout, _ := time.Parse(time.RFC3339, *svc.item[LEASE_TIMEOUT_KEY].S)
+	leaseTimeout, _ := time.Parse(time.RFC3339, *svc.item[LeaseTimeoutKey].S)
 	assert.Equal(t, leaseTimeout, status.LeaseTimeout)
 }
 
@@ -269,7 +270,7 @@ func TestGetLeaseConditional(t *testing.T) {
 		ID:           "0001",
 		Checkpoint:   "deadbeef",
 		ClaimRequest: "ijkl-mnop",
-		Mux:          &sync.Mutex{},
+		Mux:          &sync.RWMutex{},
 	}
 	err := checkpoint.GetLease(shard, "ijkl-mnop")
 	if err != nil {
@@ -298,28 +299,28 @@ func (m *mockDynamoDB) DescribeTable(*dynamodb.DescribeTableInput) (*dynamodb.De
 func (m *mockDynamoDB) PutItem(input *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 	item := input.Item
 
-	if shardID, ok := item[LEASE_KEY_KEY]; ok {
-		m.item[LEASE_KEY_KEY] = shardID
+	if shardID, ok := item[LeaseKeyKey]; ok {
+		m.item[LeaseKeyKey] = shardID
 	}
 
-	if owner, ok := item[LEASE_OWNER_KEY]; ok {
-		m.item[LEASE_OWNER_KEY] = owner
+	if owner, ok := item[LeaseOwnerKey]; ok {
+		m.item[LeaseOwnerKey] = owner
 	}
 
-	if timeout, ok := item[LEASE_TIMEOUT_KEY]; ok {
-		m.item[LEASE_TIMEOUT_KEY] = timeout
+	if timeout, ok := item[LeaseTimeoutKey]; ok {
+		m.item[LeaseTimeoutKey] = timeout
 	}
 
-	if checkpoint, ok := item[CHECKPOINT_SEQUENCE_NUMBER_KEY]; ok {
-		m.item[CHECKPOINT_SEQUENCE_NUMBER_KEY] = checkpoint
+	if checkpoint, ok := item[SequenceNumberKey]; ok {
+		m.item[SequenceNumberKey] = checkpoint
 	}
 
-	if parent, ok := item[PARENT_SHARD_ID_KEY]; ok {
-		m.item[PARENT_SHARD_ID_KEY] = parent
+	if parent, ok := item[ParentShardIdKey]; ok {
+		m.item[ParentShardIdKey] = parent
 	}
 
-	if claimRequest, ok := item[CLAIM_REQUEST_KEY]; ok {
-		m.item[CLAIM_REQUEST_KEY] = claimRequest
+	if claimRequest, ok := item[ClaimRequestKey]; ok {
+		m.item[ClaimRequestKey] = claimRequest
 	}
 
 	if input.ConditionExpression != nil {
@@ -340,8 +341,8 @@ func (m *mockDynamoDB) GetItem(input *dynamodb.GetItemInput) (*dynamodb.GetItemO
 func (m *mockDynamoDB) UpdateItem(input *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
 	exp := input.UpdateExpression
 
-	if aws.StringValue(exp) == "remove "+LEASE_OWNER_KEY {
-		delete(m.item, LEASE_OWNER_KEY)
+	if aws.StringValue(exp) == "remove "+LeaseOwnerKey {
+		delete(m.item, LeaseOwnerKey)
 	}
 
 	return nil, nil
